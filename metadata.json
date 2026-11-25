@@ -1,0 +1,6 @@
+{
+  "name": "MITS StudentHub",
+  "description": "Student analytics and academic directory dashboard with department insights, grade tracking, and tactile click audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

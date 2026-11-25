@@ -1,0 +1,233 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Primitives ---
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() &&
+        request.auth.token.email is string &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailId(id) {
+      return id is string &&
+        id.size() >= 5 &&
+        id.size() <= 254 &&
+        id.matches('^[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,}$');
+    }
+
+    function isValidRollId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 32 && id.matches('^[A-Z0-9_\\-]+$');
+    }
+
+    function isBootstrappedAdmin() {
+      return isEmailVerified() &&
+        request.auth.token.email.lower() == 'himanshukushwah2006@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isEmailVerified() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))
+      );
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap) ---
+
+    function isValidAdminUser(data, adminEmail) {
+      return data.keys().hasAll(['email', 'name', 'role', 'createdBy', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'name', 'role', 'createdBy', 'createdAt']) &&
+        data.email is string && data.email == adminEmail && isValidEmailId(data.email) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.role is string && data.role == 'admin' &&
+        data.createdBy is string && isValidId(data.createdBy) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidBranch(branch) {
+      return branch is string &&
+        branch in ['CSE', 'IT', 'AI & DS', 'ECE', 'EE', 'ME', 'CE', 'IoT'];
+    }
+
+    function isValidStatus(status) {
+      return status is string && status in ['active', 'inactive'];
+    }
+
+    function isValidYear(year) {
+      return year is int && year >= 1 && year <= 4;
+    }
+
+    function isValidMarks(marks) {
+      return marks is int && marks >= 0 && marks <= 100;
+    }
+
+    function isValidOptionalPhoto(data) {
+      return !('photo' in data) || (
+        data.photo is string &&
+        data.photo.size() >= 30 &&
+        data.photo.size() <= 250000 &&
+        (
+          data.photo[0:23] == 'data:image/jpeg;base64,' ||
+          data.photo[0:22] == 'data:image/png;base64,'
+        )
+      );
+    }
+
+    function isValidOptionalSemesterGpas(data) {
+      return !('semesterGpas' in data) || (
+        data.semesterGpas is list &&
+        data.semesterGpas.size() >= 1 &&
+        data.semesterGpas.size() <= 8 &&
+        data.semesterGpas[0] is number &&
+        data.semesterGpas[0] >= 0 &&
+        data.semesterGpas[0] <= 10
+      );
+    }
+
+    function isValidStudent(data, rollId) {
+      return data.keys().hasAll([
+          'roll', 'name', 'branch', 'year', 'marks', 'status',
+          'email', 'phone', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'roll', 'name', 'branch', 'year', 'marks', 'status',
+          'email', 'phone', 'photo', 'semesterGpas', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.roll is string && data.roll == rollId && isValidRollId(data.roll) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidBranch(data.branch) &&
+        isValidYear(data.year) &&
+        isValidMarks(data.marks) &&
+        isValidStatus(data.status) &&
+        data.email is string && data.email.size() <= 254 &&
+        data.phone is string && data.phone.size() <= 32 &&
+        isValidOptionalPhoto(data) &&
+        isValidOptionalSemesterGpas(data) &&
+        data.createdBy is string && isValidId(data.createdBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicStats(data) {
+      return data.keys().hasAll(['total', 'active', 'departments', 'average', 'passRate', 'updatedAt']) &&
+        data.keys().hasOnly(['total', 'active', 'departments', 'average', 'passRate', 'updatedAt']) &&
+        data.total is int && data.total >= 0 && data.total <= 100000 &&
+        data.active is int && data.active >= 0 && data.active <= data.total &&
+        data.departments is int && data.departments >= 0 && data.departments <= 20 &&
+        data.average is number && data.average >= 0 && data.average <= 100 &&
+        data.passRate is int && data.passRate >= 0 && data.passRate <= 100 &&
+        data.updatedAt is timestamp;
+    }
+
+    // --- Collection 1: Authorized Admins Registry ---
+    match /admins/{adminEmail} {
+      // Verified users may check ONLY their own admin doc; verified admins may read any admin doc
+      allow get: if isEmailVerified() && isValidEmailId(adminEmail) && (
+        request.auth.token.email.lower() == adminEmail || isAdmin()
+      );
+      allow list: if isEmailVerified() && isAdmin();
+
+      allow create: if isEmailVerified() &&
+        isValidEmailId(adminEmail) &&
+        isValidAdminUser(incoming(), adminEmail) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        isAdmin();
+
+      // Admin records are immutable; revoke and re-create instead
+      allow update: if false;
+
+      allow delete: if isEmailVerified() &&
+        isValidEmailId(adminEmail) &&
+        adminEmail != 'himanshukushwah2006@gmail.com' &&
+        isAdmin();
+    }
+
+    // --- Collection 2: Student Records (Protected PII & Academic Data) ---
+    match /students/{rollId} {
+      // Strictly verified administrators only — zero visitor/non-admin access to student PII
+      allow get: if isEmailVerified() && isValidRollId(rollId) && isAdmin();
+      allow list: if isEmailVerified() && isAdmin();
+
+      // Create: verified admin, strict schema, server timestamps, creator matches caller UID
+      allow create: if isEmailVerified() &&
+        isValidRollId(rollId) &&
+        isValidStudent(incoming(), rollId) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      // Update: action-based with validation blueprint, immutable roll/createdBy/createdAt, server updatedAt
+      allow update: if isEmailVerified() &&
+        isValidRollId(rollId) &&
+        isValidStudent(incoming(), rollId) &&
+        incoming().roll == existing().roll &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action 1: Edit core student profile details
+          (incoming().diff(existing()).affectedKeys().hasOnly(['name', 'branch', 'year', 'marks', 'email', 'phone', 'updatedAt']) && isAdmin()) ||
+          // Action 2: Toggle enrollment status
+          (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) && isAdmin()) ||
+          // Action 3: Upload, replace, or remove student photo
+          (incoming().diff(existing()).affectedKeys().hasOnly(['photo', 'updatedAt']) && isAdmin()) ||
+          // Action 4: Update semester GPA progression
+          (incoming().diff(existing()).affectedKeys().hasOnly(['semesterGpas', 'marks', 'updatedAt']) && isAdmin()) ||
+          // Admin full non-immutable update
+          (incoming().diff(existing()).affectedKeys().hasOnly(['name', 'branch', 'year', 'marks', 'status', 'email', 'phone', 'photo', 'semesterGpas', 'updatedAt']) && isAdmin())
+        );
+
+      allow delete: if isEmailVerified() &&
+        isValidRollId(rollId) &&
+        isAdmin();
+    }
+
+    // --- Collection 3: Public Aggregate Stats (Zero PII) ---
+    match /public_stats/{docId} {
+      allow get: if docId == 'overview';
+      allow list: if false;
+
+      allow create: if isEmailVerified() &&
+        docId == 'overview' &&
+        isValidPublicStats(incoming()) &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isEmailVerified() &&
+        docId == 'overview' &&
+        isValidPublicStats(incoming()) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['total', 'active', 'departments', 'average', 'passRate', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isEmailVerified() &&
+        docId == 'overview' &&
+        isAdmin();
+    }
+  }
+}
